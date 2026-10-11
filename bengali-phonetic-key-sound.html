@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bangla Phonetic Keyboard (IME)</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#0f172a; color:#e2e8f0;
+         display:flex; flex-direction:column; align-items:center; padding:24px; gap:14px; }
+  h1 { font-size:20px; margin:0; font-weight:600; }
+  textarea { width:min(680px,92vw); height:110px; font-size:26px; padding:12px;
+             border-radius:10px; border:1px solid #334155; background:#1e293b; color:#f8fafc; resize:vertical; }
+  .meta { width:min(680px,92vw); font-family:ui-monospace,monospace; font-size:12px; color:#94a3b8; word-break:break-all; }
+  .kb { display:flex; flex-direction:column; gap:6px; }
+  .row { display:flex; gap:6px; justify-content:center; flex-wrap:wrap; }
+  button.key { min-width:38px; height:38px; padding:0 9px; border:none; border-radius:8px;
+               background:#334155; color:#e2e8f0; font-size:15px; cursor:pointer; }
+  button.key:hover { background:#475569; }
+  button.key:active { background:#64748b; transform:translateY(1px); }
+  .fn { background:#1e40af; }
+  .hint { color:#64748b; font-size:13px; max-width:680px; text-align:center; line-height:1.6; }
+  .hint b { color:#94a3b8; }
+  #strip { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; max-width:680px; }
+  .chip { padding:6px 13px; border-radius:999px; border:1px solid #334155; background:#1e293b;
+          color:#e2e8f0; font-size:16px; cursor:pointer; user-select:none; }
+  .chip:hover { background:#334155; }
+  .chip.done { background:#14532d; border-color:#166534; color:#bbf7d0; }
+  .chip.target { border-color:#3b82f6; }
+  .speakbtn { background:#1e40af; }
+  #targetLine { font-size:14px; color:#94a3b8; font-family:ui-monospace,monospace; }
+</style>
+</head>
+<body>
+<h1>বাংলা Phonetic Keyboard</h1>
+<textarea id="t" placeholder="Type roman letters, e.g.  shubho pUja"></textarea>
+<div class="meta" id="buf">word buffer: []</div>
+<div class="meta" id="cps"></div>
+<div id="strip"></div>
+<div id="targetLine">click a word to hear it, then practise typing it</div>
+<div class="kb" id="kb"></div>
+<div class="hint">
+  Caret-safe: click or arrow anywhere. Typing a letter appends to the word at the caret;
+  <b>Backspace edits the roman buffer</b> (pops the last typed letter), even mid-word.<br>
+  Conjuncts fuse automatically: <b>ny</b> → ন্য · <b>cch</b> → চ্ছ · <b>kS</b> → ক্ষ · <b>prIti</b> → প্রীতি<br>
+  <b>'</b> releases the inherent vowel (k'thA → কথা, j'ny → জন্য); <b>্</b> inserts a hasanta;
+  <b>Space</b> commits a word.
+</div>
+<script>
+const VIRAMA = '\u09CD';
+
+// [typedCode, type, bengali, matra]  — type: v=vowel, c=consonant, s=sign, x=virama, rel=release
+// Longest-match: multi-letter codes appear before any code that is their prefix.
+const RULES = [
+  ["rri","v","ঋ","ৃ"],
+  ["OU","v","ঔ","ৌ"],["OI","v","ঐ","ৈ"],
+  ["kS","c","ক্ষ"],
+  ["kh","c","খ"],["gh","c","ঘ"],["ng","c","ঙ"],["ch","c","ছ"],["jh","c","ঝ"],
+  ["NY","c","ঞ"],["Th","c","ঠ"],["Dh","c","ঢ"],["th","c","থ"],["dh","c","ধ"],
+  ["ph","c","ফ"],["bh","c","ভ"],["sh","c","শ"],["rh","c","ঢ়"],
+  ["A","v","আ","া"],["a","v","অ","া"],["i","v","ই","ি"],["I","v","ঈ","ী"],
+  ["u","v","উ","ু"],["U","v","ঊ","ূ"],["e","v","এ","ে"],["O","v","ও","ো"],["o","v","ও","ো"],
+  ["k","c","ক"],["q","c","খ"],["g","c","গ"],["G","c","ঘ"],["c","c","চ"],["j","c","জ"],
+  ["T","c","ট"],["D","c","ড"],["N","c","ণ"],["t","c","ত"],["d","c","দ"],["n","c","ন"],
+  ["p","c","প"],["f","c","ফ"],["F","c","ফ"],["b","c","ব"],["B","c","ভ"],["m","c","ম"],
+  ["r","c","র"],["l","c","ল"],["y","c","য"],["Y","c","য়"],["R","c","ড়"],
+  ["s","c","স"],["S","c","ষ"],["h","c","হ"],["x","c","ক্ষ"],["v","c","ভ"],["z","c","ষ"],
+  ["M","s","ং"],["H","s","ঃ"],["Q","s","ঁ"],["`","x",""],["'","rel","",""]
+];
+
+// roman buffer -> bengali string: tokenise (longest match), then combine
+function render(typed){
+  const toks=[]; let i=0;
+  scan: while(i<typed.length){
+    for(const [code,type,ch,matra] of RULES){
+      if(typed.startsWith(code,i)){ toks.push({type,ch,matra}); i+=code.length; continue scan; }
+    }
+    toks.push({type:'raw',ch:typed[i]}); i++;
+  }
+  let out='', pend=false;               // pend = last output was a consonant awaiting a vowel
+  for(const t of toks){
+    if(t.type==='v'){ out += pend ? t.matra : t.ch; pend=false; }
+    else if(t.type==='c'){ if(pend) out+=VIRAMA; out+=t.ch; pend=true; }
+    else if(t.type==='x'){ if(pend){ out+=VIRAMA; pend=false; } }
+    else if(t.type==='rel'){ pend=false; }   // apostrophe: inherent-vowel release
+    else if(t.type==='s'){ out+=t.ch; pend=false; }
+    else { out+=t.ch; pend=false; }
+  }
+  return out;
+}
+
+// ---------- caret-safe document model ----------
+// doc = array of segments: {k:'t', s: bengali text} | {k:'w', r: roman buffer}
+let doc = [];
+let caretPos = 0;
+const out  = seg => seg.k === 'w' ? render(seg.r) : seg.s;
+const full = () => doc.map(out).join('');
+
+function merge(segs){
+  const r=[];
+  for(const s of segs){
+    if(!s || (s.k==='t' && s.s==='')) continue;
+    const last=r[r.length-1];
+    if(last && last.k==='t' && s.k==='t') last.s += s.s; else r.push(s);
+  }
+  return r;
+}
+
+function segAt(pos){
+  if(!doc.length) return {i:-1, start:0, seg:null};
+  let acc=0;
+  for(let i=0;i<doc.length;i++){
+    const L=out(doc[i]).length;
+    if(pos < acc+L || i===doc.length-1) return {i, start:acc, seg:doc[i]};
+    acc+=L;
+  }
+}
+
+function deleteRange(a,b){
+  if(a>=b) return;
+  const res=[]; let acc=0;
+  for(const seg of doc){
+    const s=out(seg), L=s.length, e=acc+L;
+    if(e<=a || acc>=b){ res.push(seg); }
+    else {
+      const lo=Math.max(a,acc)-acc, hi=Math.min(b,e)-acc;
+      if(seg.k==='t'){ res.push({k:'t', s: seg.s.slice(0,lo) + seg.s.slice(hi)}); }
+      else {
+        if(lo>0) res.push({k:'t', s:s.slice(0,lo)});       // word partly deleted -> roman is lost,
+        if(hi<L) res.push({k:'t', s:s.slice(hi)});         // remainder becomes plain text
+      }
+    }
+    acc=e;
+  }
+  doc=merge(res);
+}
+
+function insertTextAt(pos, str){
+  if(!doc.length){ doc=[{k:'t', s:str}]; caretPos=str.length; return; }
+  const {i,start,seg}=segAt(pos);
+  const off=pos-start;
+  doc.splice(i,1,{k:'t',s:seg.s.slice(0,off)},{k:'t',s:str},{k:'t',s:seg.s.slice(off)});
+  doc=merge(doc);
+  caretPos=pos+str.length;
+}
+
+function typeLetter(ch){
+  let pos=ta.selectionStart;
+  if(ta.selectionStart!==ta.selectionEnd) deleteRange(pos, ta.selectionEnd);
+  if(!doc.length){ doc=[{k:'w', r:ch}]; caretPos=out(doc[0]).length; sync(); return; }
+  const {i,start,seg}=segAt(pos);
+  if(seg.k==='w'){                       // continue word (appends at word end)
+    seg.r += ch;
+    caretPos = start + out(seg).length;
+  } else {                               // start a new word inside text
+    const off=pos-start;
+    doc.splice(i,1,{k:'t',s:seg.s.slice(0,off)},{k:'w',r:ch},{k:'t',s:seg.s.slice(off)});
+    doc=merge(doc);
+    caretPos = start + off + render(ch).length;
+  }
+  sync();
+}
+
+function doBackspace(){                  // <-- the fix: edits the roman buffer, not output chars
+  let pos=ta.selectionStart;
+  if(ta.selectionStart!==ta.selectionEnd){ deleteRange(pos, ta.selectionEnd); caretPos=pos; sync(); return; }
+  if(pos===0) return;
+  const {i,start,seg}=segAt(pos-1);
+  if(seg.k==='w'){                       // pop the last roman letter of the word
+    seg.r = seg.r.slice(0,-1);
+    if(seg.r===''){ doc.splice(i,1); caretPos=start; }
+    else caretPos = start + out(seg).length;
+    doc=merge(doc);
+  } else {
+    deleteRange(pos-1,pos);
+    caretPos=pos-1;
+  }
+  sync();
+}
+
+function doSpace(str){                   // ' ' or '\n'
+  let pos=ta.selectionStart;
+  if(ta.selectionStart!==ta.selectionEnd) deleteRange(pos, ta.selectionEnd);
+  const {i,start,seg}=segAt(pos);
+  if(doc.length && seg.k==='w'){
+    const s=out(seg);
+    doc.splice(i,1,{k:'t',s}); doc=merge(doc);
+    insertTextAt(start+s.length, str);
+  } else insertTextAt(pos, str);
+  sync();
+}
+
+function doPunct(ch){
+  let pos=ta.selectionStart;
+  if(ta.selectionStart!==ta.selectionEnd) deleteRange(pos, ta.selectionEnd);
+  const {i,start,seg}=segAt(pos);
+  if(doc.length && seg.k==='w'){
+    const s=out(seg);
+    doc.splice(i,1,{k:'t',s}); doc=merge(doc);
+    insertTextAt(start+s.length, ch);
+  } else insertTextAt(pos, ch);
+  sync();
+}
+
+const ta = document.getElementById('t');
+function sync(){
+  ta.value = full();
+  ta.setSelectionRange(caretPos, caretPos);
+  const {seg} = segAt(caretPos);
+  const bufEl=document.getElementById('buf'), cpEl=document.getElementById('cps');
+  if(seg && seg.k==='w'){
+    bufEl.textContent = 'word buffer: [' + seg.r + ']';
+    const o=out(seg);
+    cpEl.textContent = [...o].map(c => 'U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')).join('  ');
+  } else { bufEl.textContent='(text) caret: '+caretPos; cpEl.textContent=''; }
+  if(target && full().split(/\s+/).includes(target)){
+    chips.forEach(x => { if(x.dataset.bn === target) x.classList.add('done'); });
+    targetLine.textContent = '\u2713 ' + target + '  \u2014  well done! pick another word';
+    speak('\u0996\u09C1\u09AC \u09AD\u09BE\u09B2\u09CB');   // "খুব ভালো"
+    target = null;
+  }
+}
+
+ta.addEventListener('keydown', e => {
+  if(/^[a-zA-Z`']$/.test(e.key)){ e.preventDefault(); typeLetter(e.key); }
+  else if(e.key === 'Backspace'){ e.preventDefault(); doBackspace(); }
+  else if(e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); doSpace(e.key===' ' ? ' ' : '\n'); }
+  else if(e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); doPunct(e.key); }
+});
+
+// ---- on-screen keyboard (feeds the same pipeline) ----
+const rows = [
+  ["q","w","e","r","t","y","u","i","o","p"],
+  ["a","s","d","f","g","h","j","k","l"],
+  ["z","x","c","v","b","n","m"],
+  [{l:"ঔ",c:"OU"},{l:"ঐ",c:"OI"},{l:"ঋ",c:"rri"},{l:"ঞ",c:"NY"},{l:"য়",c:"Y"},
+   {l:"ড়",c:"R"},{l:"ঢ়",c:"rh"},{l:"ঙ",c:"ng"},{l:"ং",c:"M"},{l:"ঃ",c:"H"},{l:"ঁ",c:"Q"}],
+  [{l:"' release",c:"'"},{l:"্ hasanta",c:"`"},{l:"⌫",fn:"bs"},{l:"␣ space",fn:"sp"}]
+];
+const kb = document.getElementById('kb');
+for(const row of rows){
+  const div = document.createElement('div'); div.className = 'row';
+  for(const k of row){
+    const b = document.createElement('button'); b.className = 'key';
+    const code = typeof k === 'string' ? k : k.c;
+    b.textContent = typeof k === 'string' ? k : k.l;
+    if(k.fn) b.classList.add('fn');
+    b.onclick = () => {
+      if(k.fn === 'bs') doBackspace();
+      else if(k.fn === 'sp') doSpace(' ');
+      else typeLetter(code);
+      ta.focus();
+    };
+    div.appendChild(b);
+  }
+  kb.appendChild(div);
+}
+// ---- practice strip + speech (hear -> type -> see -> hear) ----
+const WORDS = [
+  ["মা","mA"],
+  ["বাবা","bAbA"],
+  ["আম","Am"],
+  ["নদী","n'dI"],
+  ["পাখি","pAkhi"],
+  ["মাছ","mAch"],
+  ["বই","b'i"],
+  ["জল","j'l"],
+  ["মিষ্টি","miSTi"],
+  ["বাংলা","bAMlA"],
+  ["সূর্য","sUry"],
+  ["শুভো","shubho"],
+  ["পূজা","pUja"],
+  ["কথা","k'thA"],
+  ["জন্য","j'ny"],
+  ["নমস্কার","n'm'skAr"],
+  ["ভালোবাসা","bhAlObAsA"],
+];
+let target = null;
+const strip = document.getElementById('strip');
+const targetLine = document.getElementById('targetLine');
+const chips = WORDS.map(([bn, rm]) => {
+  const c = document.createElement('button');
+  c.className = 'chip'; c.textContent = bn; c.dataset.bn = bn; c.dataset.rm = rm;
+  c.onclick = () => { target = bn; speak(bn);
+    targetLine.textContent = '\uD83C\uDFAF ' + bn + '   \u2014   type: ' + rm;
+    chips.forEach(x => x.classList.toggle('target', x.dataset.bn === bn));
+    ta.focus(); };
+  strip.appendChild(c);
+  return c;
+});
+const hearBtn = document.createElement('button');
+hearBtn.className = 'chip speakbtn'; hearBtn.textContent = '\uD83D\uDD0A hear word';
+hearBtn.onclick = () => {
+  const s = segAt(caretPos).seg;
+  speak(s && s.k === 'w' ? out(s) : (full().split(/\s+/).pop() || ''));
+  ta.focus();
+};
+strip.appendChild(hearBtn);
+
+const SPEAK_AS = { "\u099C\u09A8\u09CD\u09AF": "\u099C\u09A8\u09CD \u09A8\u09CB" };  // জন্য -> "জন্ নো" (beat on the jon- part)
+function speak(text){
+  if(!text || !('speechSynthesis' in window)) return;
+  let rate = 0.9;
+  if(SPEAK_AS[text]){ text = SPEAK_AS[text]; rate = 0.8; }
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'bn-BD'; u.rate = rate;
+  const v = speechSynthesis.getVoices().find(v => v.lang.toLowerCase().startsWith('bn'));
+  if(v) u.voice = v;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+sync();
+</script>
+</body>
+</html>
