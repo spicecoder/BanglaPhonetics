@@ -1,4 +1,4 @@
-# Bangla Phonetic Keyboard (Browser IME)
+# Bangla Phonetic Keyboard (Browser IME-  Input Method Editor)
 
 A single-file, zero-dependency Bengali (Bangla) phonetic input method that runs entirely
 in the browser. Type roman letters, watch them convert to Bangla **live**, and see the
